@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EcoLife - Carbon Footprint Tracker & Habit Architect</title>
+  <meta name="description" content="Understand, track, and reduce your carbon emissions through personalized onboarding calculations, interactive logging of habits, and insights.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Animated background blobs -->
+  <div class="background-blobs">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+  </div>
+
+  <div class="app-wrapper">
+    <!-- Header Block -->
+    <header class="glass-container">
+      <div class="logo" id="logo-btn">
+        <svg viewBox="0 0 24 24" width="32" height="32">
+          <defs>
+            <linearGradient id="logo-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#10b981" />
+              <stop offset="100%" stop-color="#06b6d4" />
+            </linearGradient>
+          </defs>
+          <path d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" fill="url(#logo-grad)"/>
+          <path d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" fill="#090d16"/>
+        </svg>
+        <span>EcoLife</span>
+      </div>
+      
+      <nav id="nav-bar" style="display: none;">
+        <button class="nav-tab active" data-target="dashboard-view">
+          📊 Dashboard
+        </button>
+        <button class="nav-tab" data-target="logger-view">
+          🌱 Daily Actions
+        </button>
+        <button class="nav-tab" data-target="insights-view">
+          💡 Recommendations
+        </button>
+      </nav>
+      
+      <div class="header-stats" id="header-stats" style="display: none;">
+        <div class="streak-badge">
+          🔥 <span id="streak-count">0</span> Day Streak
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Screens Container -->
+    <main>
+      
+      <!-- SCREEN 1: ONBOARDING QUIZ -->
+      <section id="quiz-view" class="app-view quiz-wrapper">
+        <div class="quiz-header">
+          <h1>Welcome to EcoLife</h1>
+          <p class="subtitle">Let's calculate your current annual carbon footprint to build your personalized plan.</p>
+          <div class="quiz-progress-bar-bg">
+            <div class="quiz-progress-bar-fill" id="quiz-progress"></div>
+          </div>
+        </div>
+        
+        <div class="glass-card quiz-card">
+          <h2 class="quiz-question" id="quiz-question-text">Loading question...</h2>
+          <div class="quiz-options-list" id="quiz-options-container">
+            <!-- Dynamic options insertion -->
+          </div>
+          <div class="quiz-actions">
+            <button class="btn btn-secondary" id="quiz-prev-btn" disabled>Back</button>
+            <button class="btn btn-primary" id="quiz-next-btn">Next</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2: MAIN DASHBOARD -->
+      <section id="dashboard-view" class="app-view">
+        <div class="dashboard-grid">
+          
+          <!-- Left Column (Overview & Charts) -->
+          <div class="dash-main-left">
+            
+            <!-- Carbon Footprint Hero Card -->
+            <div class="glass-card hero-emissions-card highlight-hover">
+              <div class="hero-text-content">
+                <p class="subtitle">Estimated Annual Footprint</p>
+                <div class="emissions-value-container">
+                  <span class="emissions-value" id="dash-co2-val">0.0</span>
+                  <span class="emissions-unit">tonnes CO₂e</span>
+                </div>
+                <span class="comparison-badge" id="dash-co2-comparison">
+                  Comparing with global averages...
+                </span>
+              </div>
+              
+              <div class="visualization-holder">
+                <svg width="140" height="140" class="donut-svg">
+                  <circle class="donut-bg" cx="70" cy="70" r="50"></circle>
+                  <!-- Donut segment layers, calculated in app.js -->
+                  <circle id="donut-seg-housing" class="donut-segment cat-housing" cx="70" cy="70" r="50"></circle>
+                  <circle id="donut-seg-transport" class="donut-segment cat-transport" cx="70" cy="70" r="50"></circle>
+                  <circle id="donut-seg-food" class="donut-segment cat-food" cx="70" cy="70" r="50"></circle>
+                  <circle id="donut-seg-consumption" class="donut-segment cat-consumption" cx="70" cy="70" r="50"></circle>
+                </svg>
+                <div class="donut-center-text">
+                  <span class="donut-center-val" id="donut-score">0%</span>
+                  <span class="donut-center-lbl">Avg.</span>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Category breakdown bars -->
+            <div class="glass-card">
+              <h2 style="margin-bottom: 20px;">Category Breakdown</h2>
+              <div class="breakdown-list">
+                <!-- Housing -->
+                <div class="category-bar-item">
+                  <div class="category-bar-header">
+                    <span class="category-bar-label">
+                      <span class="category-dot cat-housing"></span> Housing Energy
+                    </span>
+                    <span id="breakdown-val-housing">0.0 t</span>
+                  </div>
+                  <div class="category-bar-track">
+                    <div id="breakdown-bar-housing" class="category-bar-fill cat-housing"></div>
+                  </div>
+                </div>
+                
+                <!-- Transport -->
+                <div class="category-bar-item">
+                  <div class="category-bar-header">
+                    <span class="category-bar-label">
+                      <span class="category-dot cat-transport"></span> Transport & Travel
+                    </span>
+                    <span id="breakdown-val-transport">0.0 t</span>
+                  </div>
+                  <div class="category-bar-track">
+                    <div id="breakdown-bar-transport" class="category-bar-fill cat-transport"></div>
+                  </div>
+                </div>
+                
+                <!-- Diet & Food -->
+                <div class="category-bar-item">
+                  <div class="category-bar-header">
+                    <span class="category-bar-label">
+                      <span class="category-dot cat-food"></span> Diet & Waste
+                    </span>
+                    <span id="breakdown-val-food">0.0 t</span>
+                  </div>
+                  <div class="category-bar-track">
+                    <div id="breakdown-bar-food" class="category-bar-fill cat-food"></div>
+                  </div>
+                </div>
+                
+                <!-- Consumption & Shopping -->
+                <div class="category-bar-item">
+                  <div class="category-bar-header">
+                    <span class="category-bar-label">
+                      <span class="category-dot cat-consumption"></span> Consumer Goods
+                    </span>
+                    <span id="breakdown-val-consumption">0.0 t</span>
+                  </div>
+                  <div class="category-bar-track">
+                    <div id="breakdown-bar-consumption" class="category-bar-fill cat-consumption"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Stats Mini Cards -->
+            <div class="stats-grid">
+              <div class="stat-box">
+                <span class="stat-box-label">🌳 Carbon Offset Equiv.</span>
+                <div class="stat-box-num" id="stat-trees">0</div>
+                <span class="stat-box-label">mature trees/yr</span>
+              </div>
+              <div class="stat-box">
+                <span class="stat-box-label">⭐ Action Score</span>
+                <div class="stat-box-num" id="stat-points">0</div>
+                <span class="stat-box-label">points accumulated</span>
+              </div>
+            </div>
+
+          </div>
+          
+          <!-- Right Column (Logger Sidebar & Badges) -->
+          <div class="dash-sidebar">
+            <!-- Daily Habit Quick Logger -->
+            <div class="glass-card">
+              <div class="action-logger-header">
+                <h3>Today's Habits</h3>
+                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px; border-radius: 12px;" id="view-all-actions-btn">
+                  View All
+                </button>
+              </div>
+              <div class="actions-list" id="quick-actions-container">
+                <!-- Logged list injection -->
+              </div>
+            </div>
+            
+            <!-- Badges & Achievements -->
+            <div class="glass-card">
+              <h3>Unlocked Badges</h3>
+              <p class="subtitle">Complete actions to earn achievements</p>
+              <div class="badges-container" id="badges-container">
+                <!-- Dynamic badge injection -->
+              </div>
+            </div>
+          </div>
+          
+        </div>
+      </section>
+
+      <!-- SCREEN 3: EXTENDED ACTIONS LOGGER -->
+      <section id="logger-view" class="app-view">
+        <div class="insights-header">
+          <h1>Log Carbon-Reducing Habits</h1>
+          <p class="subtitle">Complete positive climate actions to lower your daily carbon impact and gain Eco points.</p>
+        </div>
+        
+        <div class="glass-card" style="margin-bottom: 24px;">
+          <div style="display: flex; gap: 16px; align-items: center; justify-content: space-around; flex-wrap: wrap; text-align: center;">
+            <div>
+              <p class="subtitle" style="font-size: 12px;">SAVED TODAY</p>
+              <h2 id="logger-today-saved" style="color: var(--color-primary); font-size: 28px;">0.0 kg</h2>
+            </div>
+            <div style="width: 1px; height: 40px; background: var(--border-glass);"></div>
+            <div>
+              <p class="subtitle" style="font-size: 12px;">TOTAL SAVINGS</p>
+              <h2 id="logger-total-saved" style="color: var(--color-secondary); font-size: 28px;">0.0 kg</h2>
+            </div>
+            <div style="width: 1px; height: 40px; background: var(--border-glass);"></div>
+            <div>
+              <p class="subtitle" style="font-size: 12px;">ACTIVE HABITS</p>
+              <h2 id="logger-habits-logged" style="color: var(--color-accent); font-size: 28px;">0</h2>
+            </div>
+          </div>
+        </div>
+
+        <div class="glass-card">
+          <div class="actions-list" id="full-actions-container">
+            <!-- Full List of Actions -->
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4: DETAILED INSIGHTS & CHALLENGES -->
+      <section id="insights-view" class="app-view">
+        <div class="insights-header">
+          <h1>Eco Recommendations & Challenges</h1>
+          <p class="subtitle">Tailored tips matching your footprint profile alongside environmental challenges.</p>
+        </div>
+        
+        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 24px; align-items: start;">
+          <!-- Recommendations columns -->
+          <div class="insights-list" id="recommendations-container">
+            <!-- Dynamic insights injection -->
+          </div>
+          
+          <!-- Challenges column -->
+          <div style="display: flex; flex-direction: column; gap: 24px;">
+            <div class="glass-card challenge-card highlight-hover">
+              <span class="challenge-badge">Monthly</span>
+              <h3 class="challenge-title">Plant-Based Revolution</h3>
+              <p class="challenge-desc">Complete 10 food-related actions this month to shrink your agricultural footprint.</p>
+              <div style="margin-top: 15px;">
+                <div class="category-bar-track" style="height: 6px;">
+                  <div id="challenge-food-bar" class="category-bar-fill cat-food" style="width: 0%;"></div>
+                </div>
+                <div class="challenge-progress">
+                  <span id="challenge-food-text">0 / 10 logged</span>
+                  <span style="color: var(--color-accent); font-weight: 600;">+100 pts</span>
+                </div>
+              </div>
+            </div>
+            
+            <div class="glass-card challenge-card highlight-hover" style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(22, 34, 57, 0.45) 100%); border-color: rgba(16, 185, 129, 0.18);">
+              <span class="challenge-badge" style="background: var(--color-primary);">Weekly</span>
+              <h3 class="challenge-title">Active Commuter</h3>
+              <p class="challenge-desc">Avoid solo car trips and log 5 cycling, walking, or transit commutes this week.</p>
+              <div style="margin-top: 15px;">
+                <div class="category-bar-track" style="height: 6px;">
+                  <div id="challenge-commute-bar" class="category-bar-fill cat-transport" style="width: 0%;"></div>
+                </div>
+                <div class="challenge-progress">
+                  <span id="challenge-commute-text">0 / 5 logged</span>
+                  <span style="color: var(--color-primary); font-weight: 600;">+50 pts</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Footer block -->
+    <footer>
+      <p>&copy; 2026 EcoLife carbon architect. Crafted for planetary change.</p>
+      <button class="btn-reset" id="reset-data-btn">Reset Profile & Start Calculator Quiz</button>
+    </footer>
+  </div>
+
+  <!-- App logic entry script -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>
