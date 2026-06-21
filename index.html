@@ -6,6 +6,8 @@
   <title>EcoLife - Carbon Footprint Tracker & Habit Architect</title>
   <meta name="description" content="Understand, track, and reduce your carbon emissions through personalized onboarding calculations, interactive logging of habits, and insights.">
   <link rel="stylesheet" href="styles.css">
+  <!-- Chart.js CDN for visualizations -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
   <!-- Animated background blobs -->
@@ -44,10 +46,13 @@
         </button>
       </nav>
       
-      <div class="header-stats" id="header-stats" style="display: none;">
+      <div class="header-stats" id="header-stats" style="display: none; align-items: center; gap: 12px;">
         <div class="streak-badge">
           🔥 <span id="streak-count">0</span> Day Streak
         </div>
+        <button class="btn btn-secondary" id="settings-btn" style="padding: 6px; border-radius: 50%; font-size: 16px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1px solid var(--border-glass);" aria-label="Settings">
+          ⚙️
+        </button>
       </div>
     </header>
 
@@ -60,14 +65,30 @@
           <h1>Welcome to EcoLife</h1>
           <p class="subtitle">Let's calculate your current annual carbon footprint to build your personalized plan.</p>
           <div class="quiz-progress-bar-bg">
-            <div class="quiz-progress-bar-fill" id="quiz-progress"></div>
+            <div class="quiz-progress-bar-fill" id="quiz-progress" style="width: 0%;"></div>
           </div>
+          <div class="quiz-progress-text" id="quiz-progress-text" style="font-family: var(--font-family-display); font-size: 13px; color: var(--text-secondary); margin-top: 8px; font-weight: 500;">Question 1 of 7</div>
         </div>
         
         <div class="glass-card quiz-card">
-          <h2 class="quiz-question" id="quiz-question-text">Loading question...</h2>
+          <h2 class="quiz-question" id="quiz-question-text">1. What type of home do you live in?</h2>
           <div class="quiz-options-list" id="quiz-options-container">
-            <!-- Dynamic options insertion -->
+            <div class="quiz-option-item" data-idx="0">
+              <span class="quiz-option-title">Detached house / Large home</span>
+              <span class="quiz-option-desc">Higher heating and cooling requirements</span>
+            </div>
+            <div class="quiz-option-item" data-idx="1">
+              <span class="quiz-option-title">Semi-detached or terraced house</span>
+              <span class="quiz-option-desc">Shared walls reduce heat loss</span>
+            </div>
+            <div class="quiz-option-item" data-idx="2">
+              <span class="quiz-option-title">Apartment / Condo</span>
+              <span class="quiz-option-desc">Efficient shared building energy profile</span>
+            </div>
+            <div class="quiz-option-item" data-idx="3">
+              <span class="quiz-option-title">Tiny home / Micro-apartment</span>
+              <span class="quiz-option-desc">Very low spatial energy footprint</span>
+            </div>
           </div>
           <div class="quiz-actions">
             <button class="btn btn-secondary" id="quiz-prev-btn" disabled>Back</button>
@@ -96,76 +117,37 @@
                 </span>
               </div>
               
-              <div class="visualization-holder">
-                <svg width="140" height="140" class="donut-svg">
-                  <circle class="donut-bg" cx="70" cy="70" r="50"></circle>
-                  <!-- Donut segment layers, calculated in app.js -->
-                  <circle id="donut-seg-housing" class="donut-segment cat-housing" cx="70" cy="70" r="50"></circle>
-                  <circle id="donut-seg-transport" class="donut-segment cat-transport" cx="70" cy="70" r="50"></circle>
-                  <circle id="donut-seg-food" class="donut-segment cat-food" cx="70" cy="70" r="50"></circle>
-                  <circle id="donut-seg-consumption" class="donut-segment cat-consumption" cx="70" cy="70" r="50"></circle>
+              <div class="visualization-holder gauge-holder" style="width: 180px; height: 110px; position: relative;">
+                <svg viewBox="0 0 200 120" class="gauge-svg" style="width: 100%; height: 100%;">
+                  <defs>
+                    <linearGradient id="gauge-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stop-color="#10b981" />
+                      <stop offset="35%" stop-color="#f59e0b" />
+                      <stop offset="100%" stop-color="#ef4444" />
+                    </linearGradient>
+                  </defs>
+                  <path class="gauge-track" d="M20,100 A80,80 0 0,1 180,100" fill="none" stroke="#1e293b" stroke-width="12" stroke-linecap="round"></path>
+                  <path class="gauge-track-colored" d="M20,100 A80,80 0 0,1 180,100" fill="none" stroke="url(#gauge-grad)" stroke-width="12" stroke-linecap="round"></path>
+                  <line x1="100" y1="100" x2="40.8" y2="46.2" stroke="#ffffff" stroke-width="2" stroke-dasharray="3,3" id="avg-marker-line"></line>
+                  <circle cx="100" cy="100" r="8" fill="#ffffff"></circle>
+                  <polygon points="96,100 100,25 104,100" fill="#ffffff" id="gauge-needle" style="transform-origin: 100px 100px; transform: rotate(-90deg); transition: transform 1s cubic-bezier(0.4, 0, 0.2, 1);"></polygon>
+                  <text x="20" y="118" fill="var(--text-muted)" font-size="9" text-anchor="middle" font-weight="600">0t</text>
+                  <text x="180" y="118" fill="var(--text-muted)" font-size="9" text-anchor="middle" font-weight="600">20t</text>
+                  <circle cx="40.8" cy="46.2" r="4" fill="#ffffff" stroke="#090d16" stroke-width="1.5"></circle>
                 </svg>
-                <div class="donut-center-text">
-                  <span class="donut-center-val" id="donut-score">0%</span>
-                  <span class="donut-center-lbl">Avg.</span>
-                </div>
+                <div class="gauge-avg-label" style="position: absolute; right: 0px; bottom: 8px; font-size: 9px; color: #ffffff; background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.12); font-weight: 500;">Avg: 4.7t</div>
               </div>
             </div>
             
-            <!-- Category breakdown bars -->
+            <!-- Category breakdown donut chart -->
             <div class="glass-card">
               <h2 style="margin-bottom: 20px;">Category Breakdown</h2>
-              <div class="breakdown-list">
-                <!-- Housing -->
-                <div class="category-bar-item">
-                  <div class="category-bar-header">
-                    <span class="category-bar-label">
-                      <span class="category-dot cat-housing"></span> Housing Energy
-                    </span>
-                    <span id="breakdown-val-housing">0.0 t</span>
-                  </div>
-                  <div class="category-bar-track">
-                    <div id="breakdown-bar-housing" class="category-bar-fill cat-housing"></div>
-                  </div>
+              <div class="donut-chart-wrapper" style="display: flex; align-items: center; justify-content: space-around; gap: 24px; flex-wrap: wrap;">
+                <div class="chart-container" style="position: relative; height: 180px; width: 180px; flex-shrink: 0;">
+                  <canvas id="category-donut-chart"></canvas>
                 </div>
-                
-                <!-- Transport -->
-                <div class="category-bar-item">
-                  <div class="category-bar-header">
-                    <span class="category-bar-label">
-                      <span class="category-dot cat-transport"></span> Transport & Travel
-                    </span>
-                    <span id="breakdown-val-transport">0.0 t</span>
-                  </div>
-                  <div class="category-bar-track">
-                    <div id="breakdown-bar-transport" class="category-bar-fill cat-transport"></div>
-                  </div>
-                </div>
-                
-                <!-- Diet & Food -->
-                <div class="category-bar-item">
-                  <div class="category-bar-header">
-                    <span class="category-bar-label">
-                      <span class="category-dot cat-food"></span> Diet & Waste
-                    </span>
-                    <span id="breakdown-val-food">0.0 t</span>
-                  </div>
-                  <div class="category-bar-track">
-                    <div id="breakdown-bar-food" class="category-bar-fill cat-food"></div>
-                  </div>
-                </div>
-                
-                <!-- Consumption & Shopping -->
-                <div class="category-bar-item">
-                  <div class="category-bar-header">
-                    <span class="category-bar-label">
-                      <span class="category-dot cat-consumption"></span> Consumer Goods
-                    </span>
-                    <span id="breakdown-val-consumption">0.0 t</span>
-                  </div>
-                  <div class="category-bar-track">
-                    <div id="breakdown-bar-consumption" class="category-bar-fill cat-consumption"></div>
-                  </div>
+                <div class="breakdown-list" id="breakdown-legends" style="flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 12px; list-style: none;">
+                  <!-- Dynamically populated breakdown legend bars and color levels -->
                 </div>
               </div>
             </div>
@@ -181,6 +163,35 @@
                 <span class="stat-box-label">⭐ Action Score</span>
                 <div class="stat-box-num" id="stat-points">0</div>
                 <span class="stat-box-label">points accumulated</span>
+              </div>
+            </div>
+
+            <!-- Charts Section (7-Day Trend & 12-Month Roadmap) -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px;">
+              <!-- 7-Day Savings Line Chart -->
+              <div class="glass-card" style="margin: 0;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                  <h2 style="font-size: 18px;">7-Day CO₂ Savings Trend</h2>
+                  <span class="trend-badge" id="trend-total-saved-badge" style="background: rgba(16, 185, 129, 0.12); color: var(--color-primary); font-size: 11px; padding: 4px 10px; border-radius: 12px; font-weight: 600; border: 1px solid rgba(16, 185, 129, 0.2);">
+                    Total saved: 0.0 kg
+                  </span>
+                </div>
+                <div class="chart-container" style="position: relative; height: 180px; width: 100%;">
+                  <canvas id="savings-trend-chart"></canvas>
+                </div>
+              </div>
+
+              <!-- 12-Month Reduction Roadmap -->
+              <div class="glass-card" style="margin: 0;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                  <h2 style="font-size: 18px;">12-Month Projected Roadmap</h2>
+                  <span class="roadmap-badge" style="background: rgba(6, 182, 212, 0.12); color: var(--color-secondary); font-size: 11px; padding: 4px 10px; border-radius: 12px; font-weight: 600; border: 1px solid rgba(6, 182, 212, 0.2);">
+                    Target: -30%
+                  </span>
+                </div>
+                <div class="chart-container" style="position: relative; height: 180px; width: 100%;">
+                  <canvas id="reduction-roadmap-chart"></canvas>
+                </div>
               </div>
             </div>
 
@@ -208,6 +219,9 @@
               <div class="badges-container" id="badges-container">
                 <!-- Dynamic badge injection -->
               </div>
+              <button class="btn btn-primary" id="generate-share-card-btn" style="width: 100%; margin-top: 16px; justify-content: center; gap: 8px; font-size: 13px; font-family: var(--font-family-display);">
+                ✨ Generate Share Card
+              </button>
             </div>
           </div>
           
@@ -304,7 +318,45 @@
     </footer>
   </div>
 
+  <!-- Settings Modal -->
+  <div class="modal-overlay" id="settings-modal" style="display: none;">
+    <div class="glass-card modal-content" style="max-width: 400px; margin: 100px auto; position: relative; padding: 24px;">
+      <button class="modal-close" id="close-settings-btn">&times;</button>
+      <h3 style="margin-bottom: 16px; font-size: 20px;">System Settings</h3>
+      
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        <label style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">Gemini API Key</label>
+        <input type="password" id="gemini-key-input" placeholder="Enter Gemini API key..." style="background: rgba(0,0,0,0.2); border: 1px solid var(--border-glass); padding: 10px 14px; border-radius: var(--border-radius-sm); color: #ffffff; outline: none; font-size: 13px; font-family: monospace;">
+        <p class="subtitle" style="font-size: 11px; margin-top: 4px; line-height: 1.4;">Your key is stored locally in your browser and used only to fetch personalized action tips directly from Google's Generative AI.</p>
+      </div>
+      
+      <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px;">
+        <button class="btn btn-secondary" id="cancel-settings-btn" style="padding: 8px 16px; font-size: 13px;">Cancel</button>
+        <button class="btn btn-primary" id="save-settings-btn" style="padding: 8px 16px; font-size: 13px;">Save Key</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Share Card Modal -->
+  <div class="modal-overlay" id="share-modal" style="display: none;">
+    <div class="glass-card modal-content" style="max-width: 540px; margin: 60px auto; position: relative; text-align: center; padding: 24px;">
+      <button class="modal-close" id="close-share-btn">&times;</button>
+      <h3 style="margin-bottom: 16px; font-size: 20px;">Your EcoLife Share Card</h3>
+      
+      <div id="share-card-preview-container" style="margin-bottom: 20px; border: 1px solid var(--border-glass); border-radius: var(--border-radius-md); overflow: hidden; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center;">
+        <img id="share-card-img" style="width: 100%; height: auto; display: block;" alt="EcoLife Share Card">
+      </div>
+      
+      <div style="display: flex; justify-content: center; gap: 16px;">
+        <button class="btn btn-secondary" id="close-share-modal-btn">Close</button>
+        <a href="#" class="btn btn-primary" id="download-share-card-btn" download="ecolife-achievements.png" style="text-decoration: none;">
+          📥 Download Image
+        </a>
+      </div>
+    </div>
+  </div>
+
   <!-- App logic entry script -->
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=3"></script>
 </body>
 </html>
