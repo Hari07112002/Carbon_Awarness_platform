@@ -217,3 +217,28 @@ export const PERSONALIZED_INSIGHTS = {
     }
   ]
 };
+
+export const REGIONAL_AVERAGES = {
+  us_canada: { name: "North America", value: 15.0, icon: "🇺🇸", countries: ["usa", "us", "united states", "canada"] },
+  europe: { name: "Europe & UK", value: 6.5, icon: "🇪🇺", countries: ["uk", "united kingdom", "germany", "france", "italy", "spain", "europe"] },
+  china: { name: "China", value: 7.6, icon: "🇨🇳", countries: ["china"] },
+  brazil: { name: "Brazil", value: 2.2, icon: "🇧🇷", countries: ["brazil", "brasil"] },
+  south_africa: { name: "South Africa", value: 6.9, icon: "🇿🇦", countries: ["south africa", "sa"] },
+  india: { name: "India", value: 1.9, icon: "🇮🇳", countries: ["india"] },
+  australia: { name: "Australia", value: 15.4, icon: "🇦🇺", countries: ["australia", "new zealand", "nz"] },
+  global: { name: "Global Average", value: 4.7, icon: "🌐", countries: [] }
+};
+
+export function findRegionalAverage(location) {
+  if (!location) return REGIONAL_AVERAGES.global;
+  const locLower = location.toLowerCase().trim();
+  
+  for (const key in REGIONAL_AVERAGES) {
+    const region = REGIONAL_AVERAGES[key];
+    if (region.countries.some(country => locLower.includes(country))) {
+      return region;
+    }
+  }
+  return REGIONAL_AVERAGES.global;
+}
+

@@ -1,4 +1,5 @@
-import { QUIZ_QUESTIONS, DAILY_ACTIONS, PERSONALIZED_INSIGHTS } from './data.js';
+import { QUIZ_QUESTIONS, DAILY_ACTIONS, PERSONALIZED_INSIGHTS, REGIONAL_AVERAGES, findRegionalAverage } from './data.js';
+import { firebaseService } from './firebase-service.js';
 
 console.log("EcoLife app.js: Script loading started.");
 
@@ -16,6 +17,13 @@ function getPastDateString(daysAgo) {
 
 // --- STATE DEFINITIONS ---
 let state = {
+  uid: "",
+  email: "",
+  displayName: "",
+  username: "",
+  location: "",
+  memberSince: "",
+  photoURL: "",
   quizCompleted: false,
   answers: {},            // questionId -> value
   streak: 0,
@@ -28,7 +36,14 @@ let state = {
     foodActionsCount: 0,
     commuteActionsCount: 0
   },
-  unlockedBadges: []      // array of badgeIds
+  unlockedBadges: [],     // array of badgeIds
+  chatHistory: [],
+  weeklySummary: null,
+  personalizedTips: null,
+  quizAnalysis: null,
+  shareCaption: "",
+  weeklyChallenge: null,
+  createdAt: ""
 };
 
 // Badges list
@@ -41,69 +56,197 @@ const BADGES = [
   { id: "climate_elite", title: "Climate Elite", desc: "Reach an Eco Score of 80+", icon: "🏆" }
 ];
 
-// LocalStorage Persistence Keys
-const STORAGE_KEY = "ecolife_user_state";
+// --- AUTH & STATE CONTROLLER ---
+let currentUser = null;
+let authListenerUnsubscribe = null;
 
-// --- STATE MANAGEMENT ---
-function loadState() {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) {
-    try {
-      state = JSON.parse(saved);
-      // Ensure daily saved resets if day changes
-      checkDayChange();
-    } catch (e) {
-      console.error("Error reading saved state, resetting...", e);
-      resetToDemoState();
+function setupAuthListener() {
+  if (authListenerUnsubscribe) {
+    authListenerUnsubscribe();
+  }
+  authListenerUnsubscribe = firebaseService.onAuthStateChange(async (user) => {
+    currentUser = user;
+    if (!user) {
+      // User is logged out
+      document.getElementById("nav-bar").style.display = "none";
+      document.getElementById("header-stats").style.display = "none";
+      document.getElementById("chat-fab-btn").style.display = "none";
+      
+      // Clear forms
+      document.getElementById("signin-form").reset();
+      document.getElementById("signup-form").reset();
+      
+      // Show login tab
+      switchAuthTab("signin");
+      document.getElementById("auth-verification-pending").style.display = "none";
+      document.getElementById("signin-form").style.display = "flex";
+      document.getElementById("signup-form").style.display = "none";
+      
+      // Enable auth buttons just in case
+      document.getElementById("auth-tab-signin").style.display = "block";
+      document.getElementById("auth-tab-signup").style.display = "block";
+      document.getElementById("google-signin-btn").style.display = "inline-flex";
+      document.getElementById("demo-bypass-btn").style.display = "inline-flex";
+      document.querySelector(".auth-divider").style.display = "flex";
+      
+      navigateTo("auth-view");
+      return;
     }
+
+    // Check if email is verified
+    if (!user.emailVerified) {
+      document.getElementById("nav-bar").style.display = "none";
+      document.getElementById("header-stats").style.display = "none";
+      document.getElementById("chat-fab-btn").style.display = "none";
+      
+      // Hide forms and show verification pending
+      document.getElementById("signin-form").style.display = "none";
+      document.getElementById("signup-form").style.display = "none";
+      document.getElementById("auth-tab-signin").style.display = "none";
+      document.getElementById("auth-tab-signup").style.display = "none";
+      document.getElementById("auth-verification-pending").style.display = "block";
+      
+      // Hide Google & Demo bypass buttons in verification screen
+      document.getElementById("google-signin-btn").style.display = "none";
+      document.getElementById("demo-bypass-btn").style.display = "none";
+      document.querySelector(".auth-divider").style.display = "none";
+
+      // Show mock verify hint only if user is mock
+      if (user.isMock) {
+        document.getElementById("mock-verify-hint").style.display = "block";
+      } else {
+        document.getElementById("mock-verify-hint").style.display = "none";
+      }
+      
+      navigateTo("auth-view");
+      return;
+    }
+
+    // Email is verified, restore form elements
+    document.getElementById("auth-tab-signin").style.display = "block";
+    document.getElementById("auth-tab-signup").style.display = "block";
+    document.getElementById("google-signin-btn").style.display = "inline-flex";
+    document.getElementById("demo-bypass-btn").style.display = "inline-flex";
+    document.querySelector(".auth-divider").style.display = "flex";
+    document.getElementById("auth-verification-pending").style.display = "none";
+
+    // Load profile from DB
+    let profile = await firebaseService.getUserProfile(user.uid);
+    if (!profile) {
+      // Auto-create profile if missing
+      const todayStr = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      profile = {
+        uid: user.uid,
+        email: user.email,
+        displayName: user.displayName || "Eco Friend",
+        username: "@" + (user.email ? user.email.split("@")[0] : "eco_user"),
+        location: "Global",
+        memberSince: `Member since ${todayStr}`,
+        photoURL: "",
+        points: 0,
+        streak: 0,
+        quizCompleted: false,
+        answers: {},
+        loggedActions: {},
+        challenges: { foodActionsCount: 0, commuteActionsCount: 0 },
+        unlockedBadges: []
+      };
+      await firebaseService.saveUserProfile(user.uid, profile);
+    }
+    
+    state = {
+      chatHistory: [],
+      weeklySummary: null,
+      personalizedTips: null,
+      quizAnalysis: null,
+      shareCaption: "",
+      weeklyChallenge: null,
+      createdAt: new Date().toISOString(),
+      ...profile
+    };
+    
+    // Check day change
+    checkDayChange();
+    saveState(); // Sync local / update timestamp
+
+    // Enable nav-bar and header stats
+    document.getElementById("nav-bar").style.display = "flex";
+    document.getElementById("header-stats").style.display = "flex";
+
+    // Update header avatar thumbnail
+    updateHeaderAvatar();
+
+    if (state.quizCompleted) {
+      document.getElementById("chat-fab-btn").style.display = "flex";
+      initChatUI();
+      checkWeeklyInsightSummary();
+      checkWeeklyChallenge();
+      navigateTo("dashboard-view");
+    } else {
+      document.getElementById("chat-fab-btn").style.display = "none";
+      navigateTo("quiz-view");
+      startQuiz();
+    }
+  });
+}
+
+function updateHeaderAvatar() {
+  const avatarBtn = document.getElementById("header-avatar-btn");
+  if (!avatarBtn) return;
+  if (state.photoURL) {
+    avatarBtn.innerHTML = `<img src="${state.photoURL}" style="width:100%; height:100%; object-fit:cover; border-radius:50%;">`;
   } else {
-    // If no state exists (first load for demo), load the demo profile
-    resetToDemoState();
+    avatarBtn.innerHTML = "👤";
   }
 }
 
-function resetToDemoState() {
-  const todayStr = getTodayString();
-  state = {
-    quizCompleted: true,
-    answers: {
-      housing_size: { value: 1200, index: 2, category: "housing" },
-      housing_energy: { value: 1800, index: 1, category: "housing" },
-      transport_vehicle: { value: 3500, index: 0, category: "transport" },
-      transport_flights: { value: 1800, index: 2, category: "transport" },
-      diet_type: { value: 1900, index: 1, category: "food" },
-      food_waste: { value: 300, index: 1, category: "food" },
-      consumption_habits: { value: 1200, index: 1, category: "consumption" }
-    },
-    streak: 5,
-    lastLoggedDate: todayStr,
-    points: 420,
-    dailySaved: 6.6,
-    totalSaved: 44.1,
-    loggedActions: {
-      [getPastDateString(0)]: ['plant_based_meal', 'unplug_unused', 'short_shower'],
-      [getPastDateString(1)]: ['bike_walk', 'cold_wash', 'line_dry'],
-      [getPastDateString(2)]: ['public_transit', 'plant_based_meal', 'reusable_bottles'],
-      [getPastDateString(3)]: ['plant_based_meal', 'short_shower'],
-      [getPastDateString(4)]: ['bike_walk', 'thermostat_tweak', 'unplug_unused'],
-      [getPastDateString(5)]: ['plant_based_meal', 'reusable_bottles', 'cold_wash'],
-      [getPastDateString(6)]: ['public_transit', 'short_shower', 'line_dry']
-    },
-    challenges: {
-      foodActionsCount: 4,
-      commuteActionsCount: 4
-    },
-    unlockedBadges: ["eco_pioneer", "plant_power", "green_rider"]
-  };
-  saveState();
+function getEcoTier(points) {
+  if (points >= 800) {
+    return {
+      title: "Forest Guardian",
+      icon: "🛡️",
+      class: "tier-guardian",
+      desc: "Champion of planetary health. You lead by example!"
+    };
+  } else if (points >= 400) {
+    return {
+      title: "Tree",
+      icon: "🌳",
+      class: "tier-tree",
+      desc: "Robust carbon offsetting strength. Deeply rooted habits."
+    };
+  } else if (points >= 150) {
+    return {
+      title: "Sapling",
+      icon: "🌿",
+      class: "tier-sapling",
+      desc: "Growing green influence. Habits are taking structure."
+    };
+  } else {
+    return {
+      title: "Seedling",
+      icon: "🌱",
+      class: "tier-seedling",
+      desc: "Just starting your climate journey. Nurture your habits."
+    };
+  }
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if (currentUser) {
+    firebaseService.saveUserProfile(currentUser.uid, state);
+  }
 }
 
-function resetState() {
+async function resetState() {
   state = {
+    uid: currentUser.uid,
+    email: currentUser.email,
+    displayName: state.displayName,
+    username: state.username,
+    location: state.location,
+    memberSince: state.memberSince,
+    photoURL: state.photoURL,
     quizCompleted: false,
     answers: {},
     streak: 0,
@@ -118,7 +261,7 @@ function resetState() {
     },
     unlockedBadges: []
   };
-  saveState();
+  await firebaseService.saveUserProfile(currentUser.uid, state);
   initApp();
 }
 
@@ -149,15 +292,22 @@ function checkDayChange() {
 }
 
 // --- NAVIGATION & ROUTER ---
-const views = ["quiz-view", "dashboard-view", "logger-view", "insights-view"];
+const views = ["auth-view", "quiz-view", "dashboard-view", "logger-view", "insights-view", "profile-view"];
 
 function navigateTo(viewId) {
+  // If user is not logged in or email is not verified, they cannot navigate away from auth-view
+  if (viewId !== "auth-view" && (!currentUser || !currentUser.emailVerified)) {
+    viewId = "auth-view";
+  }
+
   views.forEach(id => {
     const el = document.getElementById(id);
-    if (id === viewId) {
-      el.classList.add("active");
-    } else {
-      el.classList.remove("active");
+    if (el) {
+      if (id === viewId) {
+        el.classList.add("active");
+      } else {
+        el.classList.remove("active");
+      }
     }
   });
 
@@ -178,8 +328,11 @@ function navigateTo(viewId) {
     renderLogger();
   } else if (viewId === "insights-view") {
     renderInsights();
+  } else if (viewId === "profile-view") {
+    renderProfile();
   }
 }
+
 
 // --- ONBOARDING QUIZ RUNTIME ---
 let currentQuestionIndex = 0;
@@ -252,9 +405,9 @@ function renderQuizQuestion() {
   document.getElementById("header-stats").style.display = "none";
 }
 
-function advanceQuiz() {
+async function advanceQuiz() {
   if (state.answers[QUIZ_QUESTIONS[currentQuestionIndex].id] === undefined) {
-    alert("Please select an option before moving forward.");
+    await showCustomAlert("Onboarding", "Please select an option before moving forward.");
     return;
   }
 
@@ -262,20 +415,8 @@ function advanceQuiz() {
     currentQuestionIndex++;
     renderQuizQuestion();
   } else {
-    // Quiz completed!
-    state.quizCompleted = true;
-    unlockBadge("eco_pioneer");
-    
-    // Increase points for completing quiz
-    state.points += 50; 
-    
-    saveState();
-    
-    // Show navigation & stats
-    document.getElementById("nav-bar").style.display = "flex";
-    document.getElementById("header-stats").style.display = "flex";
-    
-    navigateTo("dashboard-view");
+    // Quiz answers submitted, trigger Gemini analysis first
+    await runQuizAnswerAnalysis();
   }
 }
 
@@ -829,6 +970,26 @@ function toggleActionLog(actionId) {
     } else if (action.category === "transport") {
       state.challenges.commuteActionsCount += 1;
     }
+
+    // Increment weekly challenge progress
+    if (state.weeklyChallenge && action.category === state.weeklyChallenge.category) {
+      if (!state.weeklyChallenge.completed) {
+        state.weeklyChallenge.progress += 1;
+        if (state.weeklyChallenge.progress >= state.weeklyChallenge.goal) {
+          state.weeklyChallenge.completed = true;
+          state.points += state.weeklyChallenge.points;
+          if (state.weeklyChallenge.badgeName) {
+            unlockBadge(state.weeklyChallenge.badgeName);
+          }
+          setTimeout(() => {
+            showCustomAlert(
+              "Challenge Completed! 🎉",
+              `Congratulations! You completed the weekly challenge: "${state.weeklyChallenge.title}" and earned ${state.weeklyChallenge.points} points!`
+            );
+          }, 100);
+        }
+      }
+    }
   } else {
     // Unlog action
     state.loggedActions[today].splice(index, 1);
@@ -842,6 +1003,15 @@ function toggleActionLog(actionId) {
     } else if (action.category === "transport") {
       state.challenges.commuteActionsCount = Math.max(0, state.challenges.commuteActionsCount - 1);
     }
+
+    // Decrement weekly challenge progress
+    if (state.weeklyChallenge && action.category === state.weeklyChallenge.category) {
+      state.weeklyChallenge.progress = Math.max(0, state.weeklyChallenge.progress - 1);
+      if (state.weeklyChallenge.completed && state.weeklyChallenge.progress < state.weeklyChallenge.goal) {
+        state.weeklyChallenge.completed = false;
+        state.points = Math.max(0, state.points - state.weeklyChallenge.points);
+      }
+    }
   }
 
   // Evaluate badge eligibility
@@ -854,6 +1024,8 @@ function toggleActionLog(actionId) {
     renderDashboard();
   } else if (activeView === "logger-view") {
     renderLogger();
+  } else if (activeView === "insights-view") {
+    renderInsights();
   }
 }
 
@@ -927,112 +1099,14 @@ function unlockBadge(badgeId) {
 
 // --- INSIGHTS & RECOMMENDATIONS ---
 function renderInsights() {
-  const emissions = calculateEmissions();
   const container = document.getElementById("recommendations-container");
   if (!container) return;
-  container.innerHTML = "";
-
-  // Identify highest category
-  const categories = ["housing", "transport", "food", "consumption"];
-  let maxCat = "housing";
-  let maxVal = -1;
-  categories.forEach(cat => {
-    if (emissions[cat] > maxVal) {
-      maxVal = emissions[cat];
-      maxCat = cat;
-    }
-  });
-
-  const catNames = {
-    housing: "Housing Energy",
-    transport: "Transport & Travel",
-    food: "Diet & Waste",
-    consumption: "Consumer Goods"
-  };
-
-  // Render AI coach container
-  const aiCoachContainer = document.createElement("div");
-  aiCoachContainer.id = "ai-coach-container";
-  aiCoachContainer.style.marginBottom = "16px";
-  container.appendChild(aiCoachContainer);
-
-  renderAICoachTip(emissions, maxCat);
-
-  // Featured recommendation header highlighting the highest impact area
-  const focusHeader = document.createElement("div");
-  focusHeader.style.marginBottom = "16px";
-  focusHeader.innerHTML = `
-    <div style="background: rgba(16, 185, 129, 0.04); border: 1px solid var(--border-glass-highlight); padding: 16px; border-radius: var(--border-radius-md); border-left: 6px solid var(--color-primary); box-shadow: var(--shadow-primary-glow);">
-      <p style="font-size: 11px; text-transform: uppercase; color: var(--color-primary); font-weight: 700; letter-spacing: 0.05em; margin-bottom: 4px;">Primary Action Focus</p>
-      <h2 style="font-size: 18px; color: var(--text-primary); margin-bottom: 6px;">Your Highest Impact Area is ${catNames[maxCat]}</h2>
-      <p style="font-size: 13px; color: var(--text-secondary);">Focusing on reduction strategies in this category will yield the largest cut in your annual emissions. Check out your tailored recommendations below.</p>
-    </div>
-  `;
-  container.appendChild(focusHeader);
-
-  let totalInsightsAdded = 0;
-
-  // Prioritize rendering recommendations for the highest category first
-  const sortedCategories = [maxCat, ...categories.filter(c => c !== maxCat)];
-
-  sortedCategories.forEach(cat => {
-    const rules = PERSONALIZED_INSIGHTS[cat] || [];
-    const catEmissions = emissions[cat] || 0;
-
-    rules.forEach(rule => {
-      // Show rules where emissions exceed threshold, or if it is the highest category, show all its tips
-      if (catEmissions >= rule.minEmissions || cat === maxCat) {
-        const card = document.createElement("div");
-        const isHighest = (cat === maxCat);
-        card.className = `insight-card insight-${cat}`;
-        if (isHighest) {
-          card.style.borderLeftWidth = "6px";
-        }
-        
-        let emoji = "💡";
-        if (cat === "housing") emoji = "🏠";
-        else if (cat === "transport") emoji = "🚗";
-        else if (cat === "food") emoji = "🥗";
-        else if (cat === "consumption") emoji = "🛍️";
-
-        card.innerHTML = `
-          <div class="insight-icon">${emoji}</div>
-          <div class="insight-body">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <h3 style="margin: 0; font-size: 15px;">${rule.title}</h3>
-              ${isHighest ? `<span style="font-size: 9px; font-weight: 700; color: #ffffff; background: var(--color-primary); padding: 2px 6px; border-radius: 8px;">HIGH IMPACT</span>` : ''}
-            </div>
-            <p style="margin-top: 4px; font-size: 13px; color: var(--text-secondary);">${rule.recommendation}</p>
-          </div>
-        `;
-        container.appendChild(card);
-        totalInsightsAdded++;
-      }
-    });
-  });
-
-  // Default fallback if emissions are extremely clean
-  if (totalInsightsAdded === 0) {
-    const card = document.createElement("div");
-    card.className = "insight-card";
-    card.innerHTML = `
-      <div class="insight-icon">🌟</div>
-      <div class="insight-body">
-        <h3>Outstanding Footprint Profile!</h3>
-        <p>Your lifestyle emissions are remarkably low and close to sustainable planetary targets. Continue logging daily actions to reinforce your habits and inspire others in the community!</p>
-      </div>
-    `;
-    container.appendChild(card);
-  }
-
-  // Update Challenges UI Progress bars
-  const foodPct = Math.min(100, (state.challenges.foodActionsCount / 10) * 100);
-  document.getElementById("challenge-food-bar").style.width = `${foodPct}%`;
-  document.getElementById("challenge-food-text").textContent = `${state.challenges.foodActionsCount} / 10 logged`;
-
-  const commutePct = Math.min(100, (state.challenges.commuteActionsCount / 5) * 100);
-  document.getElementById("challenge-commute-bar").style.width = `${commutePct}%`;
-  document.getElementById("challenge-commute-text").textContent = `${state.challenges.commuteActionsCount} / 5 logged`;
+  
+  // Call Feature 3: Smart Personalised Tips
+  checkPersonalisedTips();
+  
+  // Call Feature 6: Weekly Challenge checking/rendering
+  checkWeeklyChallenge();
 }
 
 async function renderAICoachTip(emissions, maxCat) {
@@ -1222,6 +1296,13 @@ function generateShareCard() {
   ctx.font = "14px Inter, sans-serif";
   ctx.fillText(topBadge.desc, 470, 335);
   
+  // 7.5 Draw share caption
+  if (state.shareCaption) {
+    ctx.fillStyle = "#06b6d4"; // Secondary Cyan for caption
+    ctx.font = "italic 500 14px Inter, sans-serif";
+    ctx.fillText(`"${state.shareCaption}"`, 60, 365);
+  }
+
   // 8. Footer metadata stats
   ctx.fillStyle = "#64748b";
   ctx.font = "12px Inter, sans-serif";
@@ -1245,16 +1326,1013 @@ function drawRoundedRect(ctx, x, y, width, height, radius) {
   ctx.closePath();
 }
 
+// --- PROFILE RENDERER & ACTIONS ---
+function renderProfile() {
+  // Update Identity Card text
+  document.getElementById("profile-display-name").textContent = state.displayName || "Eco Friend";
+  document.getElementById("profile-username").textContent = state.username || "";
+  document.getElementById("profile-location-text").textContent = state.location || "Global";
+  document.getElementById("profile-member-since").textContent = state.memberSince || "";
+  
+  // Update Edit Form Inputs
+  document.getElementById("edit-display-name").value = state.displayName || "";
+  document.getElementById("edit-username").value = state.username || "";
+  document.getElementById("edit-location").value = state.location || "";
+  
+  // Update Avatar Image
+  const avatarImg = document.getElementById("profile-avatar-img");
+  if (state.photoURL) {
+    avatarImg.src = state.photoURL;
+  } else {
+    avatarImg.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2364748b'><path d='M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z'/></svg>";
+  }
+
+  // Update Eco Tier Badge
+  const tier = getEcoTier(state.points);
+  const badgeContainer = document.getElementById("profile-tier-badge");
+  const badgeIcon = document.getElementById("profile-badge-icon");
+  const badgeTitle = document.getElementById("profile-badge-title");
+  const badgeDesc = document.getElementById("profile-badge-desc");
+  const tierGlow = document.getElementById("profile-tier-glow");
+
+  // Remove existing tier classes
+  badgeContainer.className = "eco-tier-badge-container";
+  badgeContainer.classList.add(tier.class);
+  
+  tierGlow.className = "tier-accent-glow";
+  tierGlow.classList.add(tier.class + "-glow");
+  
+  badgeIcon.textContent = tier.icon;
+  badgeTitle.textContent = tier.title;
+  badgeDesc.textContent = tier.desc;
+
+  // Regional Comparison logic
+  const emissions = calculateEmissions();
+  const userTonnes = Number((emissions.overall / 1000).toFixed(1));
+  document.getElementById("user-footprint-value").textContent = `${userTonnes} t CO₂e`;
+  document.getElementById("user-comp-bar-val").textContent = `${userTonnes}t`;
+
+  const region = findRegionalAverage(state.location);
+  document.getElementById("region-comparison-label").textContent = `Regional Average (${region.name})`;
+  document.getElementById("region-comparison-val").textContent = `${region.value}t`;
+
+  // Update bars width
+  const maxVal = Math.max(userTonnes, region.value, 1) * 1.2;
+  const userPct = (userTonnes / maxVal) * 100;
+  const regionPct = (region.value / maxVal) * 100;
+
+  const userBar = document.getElementById("user-comparison-bar");
+  userBar.style.width = `${userPct}%`;
+  
+  const overallLevel = getFootprintLevel(emissions.overall, "overall");
+  userBar.className = "category-bar-fill " + getFootprintLevelBgClass(overallLevel);
+
+  document.getElementById("region-comparison-bar").style.width = `${regionPct}%`;
+
+  // Comparison description text
+  const diffPct = Math.round(Math.abs((userTonnes - region.value) / (region.value || 1)) * 100);
+  const summaryCard = document.getElementById("regional-summary-card");
+  
+  if (userTonnes < region.value) {
+    summaryCard.style.borderColor = "var(--border-glass-highlight)";
+    summaryCard.style.background = "rgba(16, 185, 129, 0.04)";
+    summaryCard.innerHTML = `🌿 Excellent! Your carbon footprint is **${diffPct}% lower** than the regional average for **${region.name}** (${region.value}t). You are doing a fantastic job helping your community shrink its emissions!`;
+  } else if (userTonnes === region.value) {
+    summaryCard.style.borderColor = "var(--border-glass)";
+    summaryCard.style.background = "rgba(255, 255, 255, 0.02)";
+    summaryCard.innerHTML = `⚠️ Your carbon footprint is **identical** to the regional average for **${region.name}** (${region.value}t). Explore the recommendations and log more daily habits to become below-average.`;
+  } else {
+    summaryCard.style.borderColor = "rgba(239, 68, 68, 0.2)";
+    summaryCard.style.background = "rgba(239, 68, 68, 0.04)";
+    summaryCard.innerHTML = `🚨 Notice: Your carbon footprint is **${diffPct}% higher** than the regional average for **${region.name}** (${region.value}t). Focus on your highest impact category on the Recommendations screen to start driving this down.`;
+  }
+}
+
+// --- PHOTO UPLOAD & CAPTURE BINDINGS ---
+let cameraStream = null;
+
+function setupPhotoHandlers() {
+  const avatarFileInput = document.getElementById("avatar-file-input");
+  const uploadPhotoBtn = document.getElementById("upload-photo-btn");
+  const capturePhotoBtn = document.getElementById("capture-photo-btn");
+  const avatarContainer = document.querySelector(".profile-avatar-container");
+  
+  const cameraModal = document.getElementById("camera-modal");
+  const cameraVideo = document.getElementById("camera-video");
+  const cameraCanvas = document.getElementById("camera-canvas");
+  const closeCameraBtn = document.getElementById("close-camera-modal-btn");
+  const cancelCameraBtn = document.getElementById("cancel-camera-btn");
+  const snapCameraBtn = document.getElementById("snap-camera-btn");
+  
+  // Container click falls back to file selection
+  avatarContainer.addEventListener("click", () => {
+    avatarFileInput.click();
+  });
+  
+  // Gallery upload
+  uploadPhotoBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    avatarFileInput.click();
+  });
+  
+  avatarFileInput.addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        const compressedBase64 = await compressImage(event.target.result, 150, 150);
+        state.photoURL = compressedBase64;
+        saveState();
+        updateHeaderAvatar();
+        renderProfile();
+      };
+      reader.readAsDataURL(file);
+    }
+  });
+
+  // Open camera modal
+  capturePhotoBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+      cameraVideo.srcObject = cameraStream;
+      cameraModal.style.display = "flex";
+    } catch (err) {
+      console.error("Camera access error:", err);
+      await showCustomAlert("Camera Access Error", "Could not access camera. Please check permissions or upload from gallery instead.");
+    }
+  });
+
+  const stopCamera = () => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(track => track.stop());
+      cameraStream = null;
+    }
+    cameraVideo.srcObject = null;
+    cameraModal.style.display = "none";
+  };
+
+  closeCameraBtn.addEventListener("click", stopCamera);
+  cancelCameraBtn.addEventListener("click", stopCamera);
+
+  // Capture frame
+  snapCameraBtn.addEventListener("click", async () => {
+    if (!cameraStream) return;
+    const ctx = cameraCanvas.getContext("2d");
+    
+    // Use correct aspect ratios
+    const vw = cameraVideo.videoWidth;
+    const vh = cameraVideo.videoHeight;
+    cameraCanvas.width = 300;
+    cameraCanvas.height = 300;
+    
+    // Mirror drawing
+    ctx.translate(300, 0);
+    ctx.scale(-1, 1);
+    
+    // Draw centered square crop from video
+    const size = Math.min(vw, vh);
+    const sx = (vw - size) / 2;
+    const sy = (vh - size) / 2;
+    
+    ctx.drawImage(cameraVideo, sx, sy, size, size, 0, 0, 300, 300);
+    ctx.setTransform(1, 0, 0, 1, 0, 0); // reset scale
+    
+    const base64 = cameraCanvas.toDataURL("image/jpeg", 0.85);
+    state.photoURL = base64;
+    
+    saveState();
+    updateHeaderAvatar();
+    renderProfile();
+    stopCamera();
+  });
+}
+
+function compressImage(base64Str, maxWidth, maxHeight) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = base64Str;
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      let width = img.width;
+      let height = img.height;
+      
+      const size = Math.min(width, height);
+      canvas.width = maxWidth;
+      canvas.height = maxHeight;
+      
+      const ctx = canvas.getContext("2d");
+      const sx = (width - size) / 2;
+      const sy = (height - size) / 2;
+      
+      ctx.drawImage(img, sx, sy, size, size, 0, 0, maxWidth, maxHeight);
+      resolve(canvas.toDataURL("image/jpeg", 0.75));
+    };
+  });
+}
+
+// --- GEMINI POWERED FEATURES ---
+async function callGemini(prompt, systemInstruction = "", responseFormatJson = false) {
+  const apiKey = localStorage.getItem("ecolife_gemini_key") || "";
+  if (!apiKey) {
+    throw new Error("No Gemini API key configured.");
+  }
+  
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }]
+  };
+  
+  if (systemInstruction) {
+    payload.systemInstruction = {
+      parts: [{ text: systemInstruction }]
+    };
+  }
+  
+  if (responseFormatJson) {
+    payload.generationConfig = {
+      responseMimeType: "application/json"
+    };
+  }
+  
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
+  }
+  
+  const data = await response.json();
+  if (data.candidates && data.candidates[0].content.parts[0].text) {
+    return data.candidates[0].content.parts[0].text.trim();
+  }
+  
+  throw new Error("Invalid response structure from Gemini API.");
+}
+
+// --- FEATURE 1: ECO COACH CHAT ---
+function initChatUI() {
+  const chatFab = document.getElementById("chat-fab-btn");
+  const chatModal = document.getElementById("chat-modal");
+  const closeChatBtn = document.getElementById("close-chat-modal-btn");
+  const chatSendBtn = document.getElementById("chat-send-btn");
+  const chatUserInput = document.getElementById("chat-user-input");
+
+  if (!chatFab || !chatModal || !closeChatBtn || !chatSendBtn || !chatUserInput) return;
+
+  chatFab.addEventListener("click", () => {
+    chatModal.style.display = "flex";
+    renderChatMessages();
+    const container = document.getElementById("chat-messages-container");
+    container.scrollTop = container.scrollHeight;
+  });
+
+  closeChatBtn.addEventListener("click", () => {
+    chatModal.style.display = "none";
+  });
+
+  chatSendBtn.addEventListener("click", sendChatMessage);
+  chatUserInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") sendChatMessage();
+  });
+}
+
+function renderChatMessages() {
+  const container = document.getElementById("chat-messages-container");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (!state.chatHistory || state.chatHistory.length === 0) {
+    state.chatHistory = [
+      { role: "model", parts: [{ text: "Hello! I am your EcoLife AI Coach. Ask me anything about how to reduce your carbon footprint, optimize your home energy, or improve your daily habits!" }] }
+    ];
+  }
+
+  state.chatHistory.forEach((msg) => {
+    const bubble = document.createElement("div");
+    bubble.className = `chat-message ${msg.role}`;
+    bubble.textContent = msg.parts[0].text;
+    container.appendChild(bubble);
+  });
+  
+  container.scrollTop = container.scrollHeight;
+}
+
+async function sendChatMessage() {
+  const input = document.getElementById("chat-user-input");
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = "";
+  
+  state.chatHistory.push({ role: "user", parts: [{ text: text }] });
+  renderChatMessages();
+  
+  const container = document.getElementById("chat-messages-container");
+  const indicator = document.createElement("div");
+  indicator.className = "chat-message model typing-indicator";
+  indicator.id = "chat-typing-indicator";
+  indicator.innerHTML = `
+    <div class="typing-dot"></div>
+    <div class="typing-dot"></div>
+    <div class="typing-dot"></div>
+  `;
+  container.appendChild(indicator);
+  container.scrollTop = container.scrollHeight;
+
+  const systemInstruction = `You are EcoLife's personal carbon coach. User footprint data: ${JSON.stringify(state.answers)}. Answer questions with specific, actionable advice. Keep replies punchy, encouraging, and limited to 2-3 sentences.`;
+
+  try {
+    const apiKey = localStorage.getItem("ecolife_gemini_key") || "";
+    if (!apiKey) {
+      throw new Error("No Gemini key configured.");
+    }
+
+    const payload = {
+      contents: state.chatHistory.map(h => ({ role: h.role, parts: h.parts })),
+      systemInstruction: {
+        parts: [{ text: systemInstruction }]
+      }
+    };
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await response.json();
+    const ind = document.getElementById("chat-typing-indicator");
+    if (ind) ind.remove();
+
+    if (data.candidates && data.candidates[0].content.parts[0].text) {
+      const reply = data.candidates[0].content.parts[0].text.trim();
+      state.chatHistory.push({ role: "model", parts: [{ text: reply }] });
+      saveState();
+      renderChatMessages();
+    } else {
+      throw new Error("Invalid reply format.");
+    }
+  } catch (err) {
+    console.warn("Gemini chat failed, using offline fallback:", err);
+    const ind = document.getElementById("chat-typing-indicator");
+    if (ind) ind.remove();
+
+    const reply = getFallbackChatReply(text);
+    state.chatHistory.push({ role: "model", parts: [{ text: reply }] });
+    saveState();
+    renderChatMessages();
+  }
+}
+
+function getFallbackChatReply(userText) {
+  const t = userText.toLowerCase();
+  const emissions = calculateEmissions();
+  const footprint = (emissions.overall / 1000).toFixed(1);
+  
+  if (t.includes("footprint") || t.includes("score") || t.includes("how much") || t.includes("tonnes")) {
+    return `Your estimated carbon footprint is currently ${footprint} tonnes CO₂e per year. That is ${Math.round((emissions.overall / 4700) * 100)}% of the global average target. Let's work on home energy and transport to reduce it!`;
+  }
+  if (t.includes("food") || t.includes("diet") || t.includes("eat") || t.includes("waste")) {
+    return `Diet accounts for ${(emissions.food / 1000).toFixed(1)} tonnes of your footprint. Try logging plant-based meals in the Daily Actions tab; meatless meals save about 4.5kg CO₂ each!`;
+  }
+  if (t.includes("transport") || t.includes("travel") || t.includes("car") || t.includes("flight")) {
+    return `Transport contributes ${(emissions.transport / 1000).toFixed(1)} tonnes to your total. Swapping short solo drives for cycling or walking reduces emissions immediately by 3.2kg per trip.`;
+  }
+  if (t.includes("home") || t.includes("heating") || t.includes("energy") || t.includes("power")) {
+    return `Your housing emissions are ${(emissions.housing / 1000).toFixed(1)} tonnes. Try reducing laundry wash temperature to 30°C or lowering your thermostat by 1°C.`;
+  }
+  return `To lower your ${footprint}-tonne carbon footprint, check out the Recommendations tab for specific tips, or log today's checklist actions to accumulate points and decrease your daily impact!`;
+}
+
+// --- FEATURE 2: WEEKLY INSIGHT SUMMARY ---
+async function checkWeeklyInsightSummary(force = false) {
+  const today = new Date();
+  const dayOfWeek = today.getDay();
+  
+  const currentMonday = new Date();
+  const distanceToMonday = (dayOfWeek + 6) % 7;
+  currentMonday.setDate(today.getDate() - distanceToMonday);
+  const mondayStr = `${currentMonday.getFullYear()}-${String(currentMonday.getMonth() + 1).padStart(2, '0')}-${String(currentMonday.getDate()).padStart(2, '0')}`;
+
+  if (!force && state.weeklySummary && state.weeklySummary.mondayStr === mondayStr) {
+    renderWeeklyInsightSummary();
+    return;
+  }
+
+  const habitsList = [];
+  let totalSavedLast7Days = 0;
+  for (let i = 0; i < 7; i++) {
+    const dStr = getPastDateString(i);
+    const logged = state.loggedActions[dStr] || [];
+    logged.forEach(actionId => {
+      const action = DAILY_ACTIONS.find(a => a.id === actionId);
+      if (action) {
+        habitsList.push(action.title);
+        totalSavedLast7Days += action.impact;
+      }
+    });
+  }
+
+  const prompt = `Based on this week's habits: ${JSON.stringify(habitsList)}. CO₂ saved: ${totalSavedLast7Days.toFixed(1)}kg. Write 3 sentences: highlight best habit, one area to improve, one challenge for next week. Keep it warm and motivating.`;
+
+  const card = document.getElementById("weekly-summary-card");
+  const textEl = document.getElementById("weekly-summary-text");
+  if (card) {
+    card.style.display = "block";
+    textEl.innerHTML = `<em>AI Coach is writing your weekly insights...</em>`;
+  }
+
+  try {
+    const summaryText = await callGemini(prompt);
+    state.weeklySummary = { text: summaryText, mondayStr: mondayStr };
+    saveState();
+    renderWeeklyInsightSummary();
+  } catch (err) {
+    console.warn("Weekly Summary generation failed, using offline fallback:", err);
+    const summaryText = getFallbackWeeklySummary(habitsList, totalSavedLast7Days);
+    state.weeklySummary = { text: summaryText, mondayStr: mondayStr };
+    saveState();
+    renderWeeklyInsightSummary();
+  }
+}
+
+function renderWeeklyInsightSummary() {
+  const card = document.getElementById("weekly-summary-card");
+  const textEl = document.getElementById("weekly-summary-text");
+  if (card && state.weeklySummary) {
+    card.style.display = "block";
+    textEl.textContent = state.weeklySummary.text;
+  }
+}
+
+function getFallbackWeeklySummary(habitsList, totalSaved) {
+  if (habitsList.length === 0) {
+    return `You haven't logged any daily habits in the last 7 days yet. Swapping to plant-based meals or active transit are easy ways to get started. Let's aim to log at least three actions this coming week!`;
+  }
+  const uniqueHabits = [...new Set(habitsList)];
+  return `You did a wonderful job this week saving ${totalSaved.toFixed(1)}kg of CO₂ by practicing green habits like ${uniqueHabits.slice(0, 2).join(" and ")}! To improve further, consider looking into your home energy settings. Your challenge for next week is to complete a zero waste day.`;
+}
+
+// --- FEATURE 3: SMART PERSONALISED TIPS ---
+async function checkPersonalisedTips(force = false) {
+  const container = document.getElementById("recommendations-container");
+  if (!container) return;
+
+  if (!force && state.personalizedTips && state.personalizedTips.length > 0) {
+    renderPersonalisedTips(state.personalizedTips);
+    return;
+  }
+
+  container.innerHTML = `
+    <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-glass); padding: 32px; border-radius: var(--border-radius-md); text-align: center; width: 100%;">
+      <p style="font-size: 14px; color: var(--text-secondary);">✨ Gemini is crafting your personalized eco-tips...</p>
+      <div style="margin: 16px auto 0; width: 30px; height: 30px; border: 3px solid rgba(255,255,255,0.1); border-top-color: var(--color-secondary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
+    </div>
+  `;
+
+  const emissions = calculateEmissions();
+  const footprint = (emissions.overall / 1000).toFixed(1);
+  const homeType = state.answers.housing_size ? state.answers.housing_size.value : "Standard";
+  const diet = state.answers.diet_type ? state.answers.diet_type.value : "Standard";
+  const transport = state.answers.transport_vehicle ? state.answers.transport_vehicle.value : "Standard";
+
+  const prompt = `User profile: home=${homeType}, diet=${diet}, transport=${transport}, footprint=${footprint} tonnes. Give 3 specific carbon reduction tips as JSON: [{"title": "Tip Title", "description": "Tip Description", "estimatedSaving": 120}]. Return valid JSON array only.`;
+
+  try {
+    const jsonText = await callGemini(prompt, "Return a JSON array of 3 objects with keys 'title', 'description', and 'estimatedSaving'. Output nothing but valid JSON.", true);
+    const tips = JSON.parse(jsonText);
+    state.personalizedTips = tips;
+    saveState();
+    renderPersonalisedTips(tips);
+  } catch (err) {
+    console.warn("Personalised tips generation failed, using offline fallback:", err);
+    const tips = getFallbackPersonalisedTips(emissions);
+    state.personalizedTips = tips;
+    saveState();
+    renderPersonalisedTips(tips);
+  }
+}
+
+function renderPersonalisedTips(tips) {
+  const container = document.getElementById("recommendations-container");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const aiCoachContainer = document.createElement("div");
+  aiCoachContainer.id = "ai-coach-container";
+  aiCoachContainer.style.marginBottom = "16px";
+  container.appendChild(aiCoachContainer);
+  
+  const emissions = calculateEmissions();
+  const sortedCategories = ["housing", "transport", "food", "consumption"].sort((a,b) => emissions[b] - emissions[a]);
+  const maxCat = sortedCategories[0];
+  renderAICoachTip(emissions, maxCat);
+
+  const catNames = { housing: "Housing Energy", transport: "Transport & Travel", food: "Diet & Waste", consumption: "Consumer Goods" };
+  const focusHeader = document.createElement("div");
+  focusHeader.style.marginBottom = "16px";
+  focusHeader.innerHTML = `
+    <div style="background: rgba(16, 185, 129, 0.04); border: 1px solid var(--border-glass-highlight); padding: 16px; border-radius: var(--border-radius-md); border-left: 6px solid var(--color-primary); box-shadow: var(--shadow-primary-glow);">
+      <p style="font-size: 11px; text-transform: uppercase; color: var(--color-primary); font-weight: 700; letter-spacing: 0.05em; margin-bottom: 4px;">Primary Action Focus</p>
+      <h2 style="font-size: 18px; color: var(--text-primary); margin-bottom: 6px;">Your Highest Impact Area is ${catNames[maxCat]}</h2>
+      <p style="font-size: 13px; color: var(--text-secondary);">Focusing on reduction strategies in this category will yield the largest cut in your annual emissions. Check out your tailored recommendations below.</p>
+    </div>
+  `;
+  container.appendChild(focusHeader);
+
+  tips.forEach(tip => {
+    const card = document.createElement("div");
+    card.className = "insight-card insight-housing"; 
+    card.style.borderLeft = "6px solid var(--color-secondary)";
+    card.innerHTML = `
+      <div class="insight-icon">💡</div>
+      <div class="insight-body" style="width: 100%;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap;">
+          <h3 style="margin: 0; font-size: 15px; flex: 1;">${tip.title}</h3>
+          <span style="font-size: 10px; font-weight: 700; color: var(--color-accent); background: rgba(132, 204, 22, 0.1); padding: 3px 8px; border-radius: 8px;">-${tip.estimatedSaving} kg CO₂/yr</span>
+        </div>
+        <p style="margin-top: 6px; font-size: 13px; color: var(--text-secondary); line-height: 1.4;">${tip.description}</p>
+      </div>
+    `;
+    container.appendChild(card);
+  });
+}
+
+function getFallbackPersonalisedTips(emissions) {
+  const sorted = [
+    { key: "housing", name: "Housing Energy", staticTips: [
+      { title: "Smart Heating Adjustments", description: "Lowering your smart thermostat by just 1°C saves approximately 140kg CO₂ annually per household while lowering bills.", estimatedSaving: 140 },
+      { title: "LED Bulb Upgrades", description: "Replacing standard incandescent or halogen light bulbs with energy-efficient LED alternatives cuts home utility waste.", estimatedSaving: 80 }
+    ] },
+    { key: "transport", name: "Transport & Travel", staticTips: [
+      { title: "Active Walking or Biking Commutes", description: "Replacing two solo weekly car trips under 5km with a walking or cycling commute cuts emissions substantially.", estimatedSaving: 160 },
+      { title: "Transit Day Integration", description: "Choosing public transit instead of standard vehicle commutes cuts travel emissions by roughly 70% per passenger-kilometer.", estimatedSaving: 200 }
+    ] },
+    { key: "food", name: "Diet & Waste", staticTips: [
+      { title: "Weekly Plant-Based Integration", description: "Committing to two meatless days weekly lowers diet-related carbon and agricultural waste inputs.", estimatedSaving: 110 },
+      { title: "Zero Food Waste Initiative", description: "Planning meals, buying precisely, and freezing leftovers prevents direct compost methane emissions.", estimatedSaving: 90 }
+    ] }
+  ].sort((a, b) => emissions[b.key] - emissions[a.key]);
+
+  const output = [];
+  sorted.forEach(cat => {
+    cat.staticTips.forEach(tip => {
+      if (output.length < 3) output.push(tip);
+    });
+  });
+  return output;
+}
+
+// --- FEATURE 4: QUIZ ANSWER ANALYSIS ---
+async function runQuizAnswerAnalysis() {
+  navigateTo("quiz-analysis-view");
+
+  const loader = document.getElementById("analysis-loading-state");
+  const results = document.getElementById("analysis-results-state");
+  
+  if (loader && results) {
+    loader.style.display = "block";
+    results.style.display = "none";
+  }
+
+  const prompt = `Analyse these quiz answers: ${JSON.stringify(state.answers)}. Return JSON: { "summary": "2-sentence overview", "biggestImpact": "largest emission source", "quickWin": "easiest change this week", "thirtyDayPlan": ["step1", "step2", "step3"] }. Output valid JSON objects only.`;
+
+  try {
+    const jsonText = await callGemini(prompt, "Analyze quiz answers and output a single JSON object. Do not include markdown wraps.", true);
+    const analysis = JSON.parse(jsonText);
+    state.quizAnalysis = analysis;
+    saveState();
+    renderQuizAnalysis(analysis);
+  } catch (err) {
+    console.warn("Quiz analysis failed, using offline fallback:", err);
+    const analysis = getFallbackQuizAnalysis();
+    state.quizAnalysis = analysis;
+    saveState();
+    renderQuizAnalysis(analysis);
+  }
+}
+
+function renderQuizAnalysis(analysis) {
+  const loader = document.getElementById("analysis-loading-state");
+  const results = document.getElementById("analysis-results-state");
+  
+  if (loader && results) {
+    loader.style.display = "none";
+    results.style.display = "block";
+  }
+
+  document.getElementById("analysis-summary").textContent = analysis.summary;
+  document.getElementById("analysis-biggest-impact").textContent = analysis.biggestImpact;
+  document.getElementById("analysis-quick-win").textContent = analysis.quickWin;
+
+  const planList = document.getElementById("analysis-thirty-day-plan");
+  if (planList) {
+    planList.innerHTML = "";
+    analysis.thirtyDayPlan.forEach((step, idx) => {
+      const li = document.createElement("li");
+      li.style.display = "flex";
+      li.style.gap = "12px";
+      li.style.alignItems = "flex-start";
+      li.style.background = "rgba(255,255,255,0.01)";
+      li.style.border = "1px solid var(--border-glass)";
+      li.style.padding = "10px 14px";
+      li.style.borderRadius = "var(--border-radius-sm)";
+      
+      li.innerHTML = `
+        <span style="display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: var(--color-secondary); color: #090d16; font-size: 11px; font-weight: bold; flex-shrink: 0; margin-top: 2px;">${idx + 1}</span>
+        <span style="font-size: 13px; line-height: 1.4; color: var(--text-secondary);">${step}</span>
+      `;
+      planList.appendChild(li);
+    });
+  }
+
+  const continueBtn = document.getElementById("analysis-continue-btn");
+  if (continueBtn) {
+    const newBtn = continueBtn.cloneNode(true);
+    continueBtn.parentNode.replaceChild(newBtn, continueBtn);
+    
+    newBtn.addEventListener("click", () => {
+      unlockBadge("eco_pioneer");
+      state.quizCompleted = true;
+      state.points += 50; 
+      saveState();
+      
+      document.getElementById("nav-bar").style.display = "flex";
+      document.getElementById("header-stats").style.display = "flex";
+      document.getElementById("chat-fab-btn").style.display = "flex";
+      initChatUI();
+      checkWeeklyInsightSummary();
+      checkWeeklyChallenge();
+      navigateTo("dashboard-view");
+    });
+  }
+}
+
+function getFallbackQuizAnalysis() {
+  const emissions = calculateEmissions();
+  const sorted = [
+    { key: "housing", name: "Housing Energy", quick: "lower thermostat by 1 degree" },
+    { key: "transport", name: "Transport & Travel", quick: "swap one drive for transit or walk" },
+    { key: "food", name: "Diet & Waste", quick: "practice meatless mondays" }
+  ].sort((a, b) => emissions[b.key] - emissions[a.key]);
+
+  return {
+    summary: `Your yearly greenhouse emissions sum up to ${(emissions.overall/1000).toFixed(1)} tonnes, placing you in a moderate reduction range. By building deliberate everyday habits, you can rapidly align your lifestyle with eco-friendly targets.`,
+    biggestImpact: `${sorted[0].name} (accounts for ${(emissions[sorted[0].key]/1000).toFixed(1)} tonnes)`,
+    quickWin: `Try to ${sorted[0].quick} this week to get immediate points and carbon savings!`,
+    thirtyDayPlan: [
+      `Week 1: Focus on ${sorted[0].name} by reducing standby energy leakage or small driving trips.`,
+      `Week 2: Adjust your diet structure by completing at least 3 plant-based meals.`,
+      `Week 3: Dive into waste mitigation by tracking food leftovers and cutting consumer packaging.`
+    ]
+  };
+}
+
+// --- FEATURE 5: SHARE CARD CAPTION GENERATOR ---
+async function fetchShareCaption(totalSaved, daysActive, streak) {
+  const prompt = `Write a 1-line inspiring caption (max 12 words) for someone who saved ${totalSaved}kg CO₂ in ${daysActive} days with a ${streak}-day streak. Make it feel proud and shareable. Return text only.`;
+
+  try {
+    const text = await callGemini(prompt);
+    return text.replace(/"/g, '').trim();
+  } catch (err) {
+    console.warn("Caption generation failed, using offline fallback:", err);
+    return getFallbackShareCaption(totalSaved, streak);
+  }
+}
+
+function getFallbackShareCaption(totalSaved, streak) {
+  return `Proudly saved ${totalSaved}kg of CO₂! Building a greener lifestyle on a ${streak}-day streak.`;
+}
+
+// --- FEATURE 6: WEEKLY CHALLENGE GENERATOR ---
+async function checkWeeklyChallenge(force = false) {
+  const today = new Date();
+  const dayOfWeek = today.getDay();
+  
+  const currentMonday = new Date();
+  const distanceToMonday = (dayOfWeek + 6) % 7;
+  currentMonday.setDate(today.getDate() - distanceToMonday);
+  const mondayStr = `${currentMonday.getFullYear()}-${String(currentMonday.getMonth() + 1).padStart(2, '0')}-${String(currentMonday.getDate()).padStart(2, '0')}`;
+
+  if (!force && state.weeklyChallenge && state.weeklyChallenge.mondayStr === mondayStr) {
+    renderWeeklyChallenge();
+    return;
+  }
+
+  const weakest = getWeakestCarbonAreas();
+  const prompt = `User's weakest carbon areas: ${weakest}. Create 1 fun weekly eco challenge. Return JSON: { "title": "Challenge Title", "description": "Challenge Description", "category": "food/transport/housing/consumption", "goal": 5, "points": 100, "badgeName": "badge_id" }. Return valid JSON only. Choose category ONLY from 'food', 'transport', 'housing', or 'consumption'.`;
+
+  try {
+    const jsonText = await callGemini(prompt, "Output a single JSON object. Choose category from food, transport, housing, or consumption.", true);
+    const challenge = JSON.parse(jsonText);
+    
+    state.weeklyChallenge = {
+      ...challenge,
+      progress: 0,
+      completed: false,
+      mondayStr: mondayStr
+    };
+    saveState();
+    renderWeeklyChallenge();
+  } catch (err) {
+    console.warn("Weekly challenge generation failed, using offline fallback:", err);
+    const challenge = getFallbackWeeklyChallenge(weakest);
+    state.weeklyChallenge = {
+      ...challenge,
+      progress: 0,
+      completed: false,
+      mondayStr: mondayStr
+    };
+    saveState();
+    renderWeeklyChallenge();
+  }
+}
+
+function getWeakestCarbonAreas() {
+  const emissions = calculateEmissions();
+  const sorted = [
+    { key: "housing", name: "Housing Energy", value: emissions.housing },
+    { key: "transport", name: "Transport & Travel", value: emissions.transport },
+    { key: "food", name: "Diet & Waste", value: emissions.food },
+    { key: "consumption", name: "Consumer Goods", value: emissions.consumption }
+  ].sort((a, b) => b.value - a.value);
+  
+  return `${sorted[0].name} and ${sorted[1].name}`;
+}
+
+function renderWeeklyChallenge() {
+  const titleEl = document.getElementById("weekly-challenge-title");
+  const descEl = document.getElementById("weekly-challenge-desc");
+  const barEl = document.getElementById("weekly-challenge-bar");
+  const textEl = document.getElementById("weekly-challenge-text");
+  const ptsEl = document.getElementById("weekly-challenge-points");
+  
+  if (!state.weeklyChallenge || !titleEl) return;
+  
+  const challenge = state.weeklyChallenge;
+  
+  titleEl.textContent = challenge.title;
+  descEl.textContent = challenge.description;
+  ptsEl.textContent = `+${challenge.points} pts`;
+  textEl.textContent = `${challenge.progress} / ${challenge.goal} logged`;
+  
+  const pct = Math.min(100, (challenge.progress / (challenge.goal || 1)) * 100);
+  barEl.style.width = `${pct}%`;
+  
+  barEl.className = "category-bar-fill";
+  if (challenge.category === "food") barEl.classList.add("cat-food");
+  else if (challenge.category === "transport") barEl.classList.add("cat-transport");
+  else if (challenge.category === "housing") barEl.classList.add("cat-housing");
+  else if (challenge.category === "consumption") barEl.classList.add("cat-consumption");
+  
+  if (challenge.completed) {
+    titleEl.textContent = `🎉 ${challenge.title} (Completed)`;
+    barEl.style.width = "100%";
+    textEl.textContent = "Goal reached!";
+    textEl.style.color = "var(--color-primary)";
+    ptsEl.style.textDecoration = "line-through";
+  } else {
+    textEl.style.color = "var(--text-secondary)";
+    ptsEl.style.textDecoration = "none";
+  }
+}
+
+function getFallbackWeeklyChallenge(weakest) {
+  if (weakest.includes("Diet")) {
+    return {
+      title: "Veggie Fuel Chef",
+      description: "Log 3 plant-based meals this week to counter agricultural greenhouse loads.",
+      category: "food",
+      goal: 3,
+      points: 60,
+      badgeName: "plant_power"
+    };
+  }
+  return {
+    title: "Green Transit Rider",
+    description: "Practice active commutes and log 3 walking, cycling, or transit trips this week.",
+    category: "transport",
+    goal: 3,
+    points: 80,
+    badgeName: "green_rider"
+  };
+}
+
+// --- CUSTOM ALERT / CONFIRM SYSTEM ---
+function showCustomAlert(title, message, isConfirm = false) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById("custom-alert-modal");
+    const titleEl = document.getElementById("custom-alert-title");
+    const messageEl = document.getElementById("custom-alert-message");
+    const okBtn = document.getElementById("custom-alert-ok-btn");
+    const cancelBtn = document.getElementById("custom-alert-cancel-btn");
+    
+    if (!modal || !titleEl || !messageEl || !okBtn || !cancelBtn) {
+      console.warn("Custom alert modal elements not found in DOM, falling back to native popup.");
+      if (isConfirm) {
+        resolve(confirm(message));
+      } else {
+        alert(message);
+        resolve(true);
+      }
+      return;
+    }
+
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+    
+    if (isConfirm) {
+      cancelBtn.style.display = "inline-flex";
+    } else {
+      cancelBtn.style.display = "none";
+    }
+    
+    modal.style.display = "flex";
+    
+    const handleOk = () => {
+      cleanup();
+      resolve(true);
+    };
+    
+    const handleCancel = () => {
+      cleanup();
+      resolve(false);
+    };
+    
+    const cleanup = () => {
+      modal.style.display = "none";
+      okBtn.removeEventListener("click", handleOk);
+      cancelBtn.removeEventListener("click", handleCancel);
+    };
+    
+    okBtn.addEventListener("click", handleOk);
+    cancelBtn.addEventListener("click", handleCancel);
+  });
+}
+
+// --- AUTH & CONFIG EVENT HANDLERS ---
+function switchAuthTab(tab) {
+  const signinForm = document.getElementById("signin-form");
+  const signupForm = document.getElementById("signup-form");
+  const signinTab = document.getElementById("auth-tab-signin");
+  const signupTab = document.getElementById("auth-tab-signup");
+  
+  if (tab === "signin") {
+    signinForm.classList.add("active");
+    signupForm.classList.remove("active");
+    signinTab.classList.add("active");
+    signupTab.classList.remove("active");
+  } else {
+    signinForm.classList.remove("active");
+    signupForm.classList.add("active");
+    signinTab.classList.remove("active");
+    signupTab.classList.add("active");
+  }
+}
+
+function setupAuthHandlers() {
+  const signinTab = document.getElementById("auth-tab-signin");
+  const signupTab = document.getElementById("auth-tab-signup");
+  const signinForm = document.getElementById("signin-form");
+  const signupForm = document.getElementById("signup-form");
+  const googleBtn = document.getElementById("google-signin-btn");
+  const demoBtn = document.getElementById("demo-bypass-btn");
+  
+  const checkVerifyBtn = document.getElementById("check-verification-btn");
+  const mockVerifyBtn = document.getElementById("mock-verify-btn");
+  const logoutPendingBtn = document.getElementById("logout-pending-btn");
+  
+  signinTab.addEventListener("click", () => switchAuthTab("signin"));
+  signupTab.addEventListener("click", () => switchAuthTab("signup"));
+  
+  // Sign In Form Submit
+  signinForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const email = document.getElementById("signin-email").value.trim();
+    const password = document.getElementById("signin-password").value;
+    
+    try {
+      await firebaseService.signIn(email, password);
+    } catch (err) {
+      console.error("Sign-in failed:", err);
+      await showCustomAlert("Login Failed", err.message);
+    }
+  });
+  
+  // Sign Up Form Submit
+  signupForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("signup-name").value.trim();
+    const username = document.getElementById("signup-username").value.trim();
+    const location = document.getElementById("signup-location").value.trim();
+    const email = document.getElementById("signup-email").value.trim();
+    const password = document.getElementById("signup-password").value;
+    const confirmPassword = document.getElementById("signup-confirm-password").value;
+    
+    if (password !== confirmPassword) {
+      await showCustomAlert("Validation Error", "Passwords do not match!");
+      return;
+    }
+    
+    try {
+      await firebaseService.signUp(email, password, name, username, location);
+    } catch (err) {
+      console.error("Registration failed:", err);
+      await showCustomAlert("Registration Failed", err.message);
+    }
+  });
+
+  // Google OAuth button
+  googleBtn.addEventListener("click", async () => {
+    try {
+      await firebaseService.signInWithGoogle();
+    } catch (err) {
+      console.error("Google sign in failed:", err);
+      await showCustomAlert("Google Sign-In Failed", err.message);
+    }
+  });
+
+  // Demo bypass triggers
+  demoBtn.addEventListener("click", () => {
+    localStorage.setItem("ecolife_mock_session", "mock_demo_account");
+    const todayStr = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    
+    const mockUsers = JSON.parse(localStorage.getItem("ecolife_mock_users") || "{}");
+    if (!mockUsers["mock_demo_account"]) {
+      mockUsers["mock_demo_account"] = {
+        uid: "mock_demo_account",
+        email: "demo@ecolife.com",
+        password: "password",
+        displayName: "Eco Adventurer",
+        emailVerified: true,
+        profile: {
+          uid: "mock_demo_account",
+          email: "demo@ecolife.com",
+          displayName: "Eco Adventurer",
+          username: "@eco_pioneer",
+          location: "London, UK",
+          memberSince: `Member since ${todayStr}`,
+          photoURL: "",
+          points: 420,
+          streak: 5,
+          dailySaved: 6.6,
+          totalSaved: 44.1,
+          quizCompleted: true,
+          answers: {
+            housing_size: { value: 1200, index: 2, category: "housing" },
+            housing_energy: { value: 1800, index: 1, category: "housing" },
+            transport_vehicle: { value: 3500, index: 0, category: "transport" },
+            transport_flights: { value: 1800, index: 2, category: "transport" },
+            diet_type: { value: 1900, index: 1, category: "food" },
+            food_waste: { value: 300, index: 1, category: "food" },
+            consumption_habits: { value: 1200, index: 1, category: "consumption" }
+          },
+          loggedActions: {
+            [getPastDateString(0)]: ['plant_based_meal', 'unplug_unused', 'short_shower'],
+            [getPastDateString(1)]: ['bike_walk', 'cold_wash', 'line_dry'],
+            [getPastDateString(2)]: ['public_transit', 'plant_based_meal', 'reusable_bottles'],
+            [getPastDateString(3)]: ['plant_based_meal', 'short_shower'],
+            [getPastDateString(4)]: ['bike_walk', 'thermostat_tweak', 'unplug_unused'],
+            [getPastDateString(5)]: ['plant_based_meal', 'reusable_bottles', 'cold_wash'],
+            [getPastDateString(6)]: ['public_transit', 'short_shower', 'line_dry']
+          },
+          challenges: { foodActionsCount: 4, commuteActionsCount: 4 },
+          unlockedBadges: ["eco_pioneer", "plant_power", "green_rider"]
+        }
+      };
+      localStorage.setItem("ecolife_mock_users", JSON.stringify(mockUsers));
+    }
+    window.dispatchEvent(new Event("mock-auth-changed"));
+  });
+
+  mockVerifyBtn.addEventListener("click", () => {
+    if (currentUser) {
+      firebaseService.simulateMockVerification(currentUser.uid);
+    }
+  });
+
+  checkVerifyBtn.addEventListener("click", async () => {
+    if (firebaseService.isReal()) {
+      window.location.reload();
+    } else {
+      await showCustomAlert("Verification Pending", "Simulated verification link is still pending. Click 'Verify Instantly' to proceed in Demo Mode.");
+    }
+  });
+
+  logoutPendingBtn.addEventListener("click", () => {
+    firebaseService.signOut();
+  });
+}
+
 // --- ROUTER & CONTROL SYSTEM BOOTSTRAP ---
 function initApp() {
-  loadState();
-
-  if (state.quizCompleted) {
-    navigateTo("dashboard-view");
-  } else {
-    navigateTo("quiz-view");
-    startQuiz();
-  }
+  setupAuthListener();
 }
 
 // Midnight reset timer setup
@@ -1287,20 +2365,27 @@ document.querySelectorAll(".nav-tab").forEach(tab => {
 });
 
 document.getElementById("logo-btn").addEventListener("click", () => {
-  if (state.quizCompleted) {
+  if (state.quizCompleted && currentUser && currentUser.emailVerified) {
     navigateTo("dashboard-view");
   }
 });
 
 document.getElementById("view-all-actions-btn").addEventListener("click", () => {
-  navigateTo("logger-view");
+  if (currentUser && currentUser.emailVerified) {
+    navigateTo("logger-view");
+  }
 });
 
 document.getElementById("quiz-prev-btn").addEventListener("click", retreatQuiz);
 document.getElementById("quiz-next-btn").addEventListener("click", advanceQuiz);
 
-document.getElementById("reset-data-btn").addEventListener("click", () => {
-  if (confirm("Are you sure you want to reset your footprint profile, points, and logs history? This cannot be undone.")) {
+document.getElementById("reset-data-btn").addEventListener("click", async () => {
+  const confirmed = await showCustomAlert(
+    "Reset Profile",
+    "Are you sure you want to reset your footprint profile, points, and logs history? This cannot be undone.",
+    true
+  );
+  if (confirmed) {
     resetState();
   }
 });
@@ -1312,9 +2397,11 @@ const closeSettingsBtn = document.getElementById("close-settings-btn");
 const cancelSettingsBtn = document.getElementById("cancel-settings-btn");
 const saveSettingsBtn = document.getElementById("save-settings-btn");
 const geminiKeyInput = document.getElementById("gemini-key-input");
+const firebaseConfigInput = document.getElementById("firebase-config-input");
 
 settingsBtn.addEventListener("click", () => {
   geminiKeyInput.value = localStorage.getItem("ecolife_gemini_key") || "";
+  firebaseConfigInput.value = localStorage.getItem("ecolife_firebase_config") || "";
   settingsModal.style.display = "flex";
 });
 
@@ -1325,17 +2412,40 @@ const hideSettingsModal = () => {
 closeSettingsBtn.addEventListener("click", hideSettingsModal);
 cancelSettingsBtn.addEventListener("click", hideSettingsModal);
 
-saveSettingsBtn.addEventListener("click", () => {
+saveSettingsBtn.addEventListener("click", async () => {
+  const oldConfig = localStorage.getItem("ecolife_firebase_config") || "";
+  const newConfig = firebaseConfigInput.value.trim();
+  let configChanged = (oldConfig !== newConfig);
+  
+  if (newConfig) {
+    try {
+      JSON.parse(newConfig);
+      localStorage.setItem("ecolife_firebase_config", newConfig);
+    } catch (e) {
+      await showCustomAlert("Invalid JSON", "Invalid JSON format for Firebase configuration.");
+      return;
+    }
+  } else {
+    localStorage.removeItem("ecolife_firebase_config");
+  }
+
   const key = geminiKeyInput.value.trim();
   if (key) {
     localStorage.setItem("ecolife_gemini_key", key);
   } else {
     localStorage.removeItem("ecolife_gemini_key");
   }
+  
   hideSettingsModal();
-  const activeView = document.querySelector(".app-view.active")?.id;
-  if (activeView === "insights-view") {
-    renderInsights();
+  
+  if (configChanged) {
+    await showCustomAlert("Settings Saved", "Configuration saved! Reloading the page to apply changes...");
+    window.location.reload();
+  } else {
+    const activeView = document.querySelector(".app-view.active")?.id;
+    if (activeView === "insights-view") {
+      renderInsights();
+    }
   }
 });
 
@@ -1347,11 +2457,31 @@ const closeShareModalBtn = document.getElementById("close-share-modal-btn");
 const downloadShareCardBtn = document.getElementById("download-share-card-btn");
 const shareCardImg = document.getElementById("share-card-img");
 
-generateShareCardBtn.addEventListener("click", () => {
+generateShareCardBtn.addEventListener("click", async () => {
+  let daysActive = 1;
+  if (state.createdAt) {
+    const diffTime = Math.abs(new Date() - new Date(state.createdAt));
+    daysActive = Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+  }
+  
+  // Show a simple placeholder or alert context if it takes time
+  const caption = await fetchShareCaption(state.totalSaved.toFixed(1), daysActive, state.streak);
+  state.shareCaption = caption;
+  saveState();
+
   const dataUrl = generateShareCard();
   shareCardImg.src = dataUrl;
   downloadShareCardBtn.href = dataUrl;
   shareModal.style.display = "flex";
+});
+
+// AI Feature Regenerate/Refresh Buttons
+document.getElementById("regen-weekly-summary-btn").addEventListener("click", () => {
+  checkWeeklyInsightSummary(true);
+});
+
+document.getElementById("refresh-tips-btn").addEventListener("click", () => {
+  checkPersonalisedTips(true);
 });
 
 const hideShareModal = () => {
@@ -1361,8 +2491,45 @@ const hideShareModal = () => {
 closeShareBtn.addEventListener("click", hideShareModal);
 closeShareModalBtn.addEventListener("click", hideShareModal);
 
+// Header Avatar Event Listener
+document.getElementById("header-avatar-btn").addEventListener("click", () => {
+  if (state.quizCompleted && currentUser && currentUser.emailVerified) {
+    navigateTo("profile-view");
+  }
+});
+
+// Log Out Button
+document.getElementById("logout-btn").addEventListener("click", async () => {
+  const confirmed = await showCustomAlert("Sign Out", "Are you sure you want to sign out?", true);
+  if (confirmed) {
+    firebaseService.signOut();
+  }
+});
+
+// Profile Form Submit
+document.getElementById("edit-profile-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const displayName = document.getElementById("edit-display-name").value.trim();
+  const username = document.getElementById("edit-username").value.trim();
+  const location = document.getElementById("edit-location").value.trim();
+  
+  const formattedUsername = username.startsWith("@") ? username : "@" + username;
+  
+  state.displayName = displayName;
+  state.username = formattedUsername;
+  state.location = location;
+  
+  saveState();
+  updateHeaderAvatar();
+  renderProfile();
+  await showCustomAlert("Profile Updated", "Profile changes saved successfully!");
+});
+
 // Run App Immediately
 console.log("EcoLife app.js: Initializing app...");
+setupAuthHandlers();
+setupPhotoHandlers();
 initApp();
 console.log("EcoLife app.js: App initialized successfully.");
 setupMidnightReset();
+
